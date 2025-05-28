@@ -1,6 +1,7 @@
 # Prerequisites
 *.d
-
+.ccls-cache
+.vscode
 # Object files
 *.o
 *.ko
