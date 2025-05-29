@@ -2,6 +2,9 @@
 *.d
 .ccls-cache
 .vscode
+
+loot
+
 # Object files
 *.o
 *.ko
