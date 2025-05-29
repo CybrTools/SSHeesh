@@ -34,18 +34,23 @@ int send_encrypted_blob(const uint8_t *data, size_t length) {
     fprintf(stderr, "[DEBUG] Preparing to send %zu bytes\n", length);
 #endif
 
-    size_t padded_len = pad_to_block(length);
-    uint8_t *buffer = calloc(1, padded_len);
+    // Compute PKCS#7 padding size
+    uint8_t pad = AES_BLOCKLEN - (length % AES_BLOCKLEN);
+    size_t padded_len = length + pad;
+
+    uint8_t *buffer = malloc(padded_len);
     if (!buffer) {
 #ifdef DEBUG
         perror("[DEBUG] Memory allocation failed");
 #endif
         return 0;
     }
+
     memcpy(buffer, data, length);
+    memset(buffer + length, pad, pad); // Proper PKCS#7 padding
 
 #ifdef DEBUG
-    fprintf(stderr, "[DEBUG] Padded length: %zu bytes\n", padded_len);
+    fprintf(stderr, "[DEBUG] Padded length: %zu bytes (pad: %u)\n", padded_len, pad);
 #endif
 
     // Encrypt the buffer in-place
@@ -101,3 +106,4 @@ int send_encrypted_blob(const uint8_t *data, size_t length) {
     free(buffer);
     return 1;
 }
+
